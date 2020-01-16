@@ -13,9 +13,10 @@
 //    - IF input.phase == MAX_PHASE THEN output.phase == Unknown,
 
 #define ERROR_INVALID_PHASE               -100
-#define ERROR_INVALID_DEPOSIT_CAPACITY    -101
-#define ERROR_INVALID_COMMITMENT          -102
-#define ERROR_INVALID_REVEAL              -103
+#define ERROR_INVALID_CAMPAIGN_ID         -101
+#define ERROR_INVALID_DEPOSIT_CAPACITY    -102
+#define ERROR_INVALID_COMMITMENT          -103
+#define ERROR_INVALID_REVEAL              -104
 
 #define SCRIPT_SIZE       32768 /* 32 KB */
 #define WITNESS_SIZE      32768 /* 32 KB */
@@ -29,10 +30,25 @@
 #define CHALLENGE_PHASE   5
 #define FINALIZE_PHASE    6
 
+mol_seg_res_t load_current_script();
+mol_seg_res_t load_current_script_hash();
+int verify_start(size_t index, size_t source);
+int verify_commit(size_t index, size_t source);
+int verify_reveal(size_t index);
+int verify_aggregate(size_t index);
+int verify_challenge(size_t index);
+int verify_finalize(size_t index);
+int verify_campaign_id(size_t index, size_t source);
+int verify_deposit_capacity(size_t index);
+int verify_commitment(size_t index, size_t source);
+int verify_reveal_witness(size_t index);
+int extract_campaign_info(bool* is_campaign_cell, uint8_t* phase, size_t index, size_t source);
+
 typedef struct {
   uint8_t* id;        // OutPoint
   uint64_t deposit;
   uint64_t period;
+  uint8_t* script_hash;
 } campaign_t;
 
 campaign_t campaign;
@@ -76,9 +92,8 @@ mol_seg_res_t load_current_script_hash() {
   return script_hash_seg_res;
 }
 
-// Check the campaign id == the input cell at the same position
-int verify_start(size_t index) {
-  return verify_campaign_id(index);
+int verify_start(size_t index, size_t source) {
+  return verify_campaign_id(index, source);
 }
 
 int verify_commit(size_t index, size_t source) {
@@ -92,58 +107,36 @@ int verify_commit(size_t index, size_t source) {
 }
 
 int verify_reveal(size_t index) {
-  int ret;
-  ret = verify_deposit_capacity(index);
-  if (ret != CKB_SUCCESS) {
-    return ret;
-  }
-
-  unsigned char witness[WITNESS_SIZE];
-  uint64_t len = 0;
-  ret = ckb_load_witness(
-      witness, len, 0, index,
-      CKB_SOURCE_GROUP_INPUT
-  );
-  if (ret != CKB_SUCCESS) {
-    return ret;
-  }
-  mol_seg_t witness_seg;
-  witness_seg.ptr = witness;
-  witness_seg.size = len;
-  if (MolReader_WitnessArgs_verify(&witness_seg, false) != MOL_OK) {
-    return ERROR_SYSCALL;
-  }
-
-  mol_seg_t reveal_seg = MolReader_WitnessArgs_get_output_type(&witness_seg);
-  if (reveal_seg.size != 8) {
-    return ERROR_INVALID_REVEAL;
-  }
-
-  ret = verify_commitment(campaign, index, CKB_SOURCE_INPUT);
+  int ret = verify_deposit_capacity(index);
   if (ret != CKB_SUCCESS) {
     return ret;
   }
 
   // FIXME TODO bilibili verify commitment == hash(reveal)
+  return verify_reveal_witness(index);
+}
+
+int verify_aggregate(size_t index) {
+  // TODO
   return CKB_SUCCESS;
 }
 
-int verify_aggregate(campaign_t* campaign, size_t index) {
-  verify_start
+int verify_challenge(size_t index) {
+  // TODO
+  return CKB_SUCCESS;
 }
 
-int verify_challenge(campaign_t* campaign, size_t index) {
+int verify_finalize(size_t index) {
+  // TODO
+  return CKB_SUCCESS;
 }
 
-int verify_finalize(campaign_t* campaign, size_t index) {
-}
-
-int verify_campaign_id(campaign_t* campaign, size_t index) {
+int verify_campaign_id(size_t index, size_t source) {
   uint8_t out_point[OUT_POINT_SIZE];
   uint64_t len = OUT_POINT_SIZE;
   int ret = ckb_load_input_by_field(
-      out_point, &len, index,
-      CKB_SOURCE_INPUT, CKB_INPUT_FIELD_OUT_POINT
+      out_point, &len, 0, index, source,
+      CKB_INPUT_FIELD_OUT_POINT
   );
   if (ret != CKB_SUCCESS) {
     return ret;
@@ -165,7 +158,7 @@ int verify_campaign_id(campaign_t* campaign, size_t index) {
   return MOL_OK;
 }
 
-int verify_deposit_capacity(campaign_t* campaign, size_t index) {
+int verify_deposit_capacity(size_t index) {
   uint64_t capacity = 0;
   uint64_t len = 8;
   int ret = ckb_load_cell_by_field(
@@ -185,7 +178,7 @@ int verify_deposit_capacity(campaign_t* campaign, size_t index) {
   return CKB_SUCCESS;
 }
 
-int verify_commitment(campaign_t* campaign, size_t index, size_t source) {
+int verify_commitment(size_t index, size_t source) {
   uint64_t len = HASH_SIZE;
   unsigned char commitment[HASH_SIZE];
   int ret = ckb_load_cell_data(
@@ -209,9 +202,33 @@ int verify_commitment(campaign_t* campaign, size_t index, size_t source) {
   return CKB_SUCCESS;
 }
 
+int verify_reveal_witness(size_t index) {
+  unsigned char witness[WITNESS_SIZE];
+  uint64_t len = 0;
+  int ret = ckb_load_witness(
+      witness, &len, 0, index,
+      CKB_SOURCE_GROUP_INPUT
+  );
+  if (ret != CKB_SUCCESS) {
+    return ret;
+  }
+
+  mol_seg_t witness_seg;
+  witness_seg.ptr = witness;
+  witness_seg.size = len;
+  if (MolReader_WitnessArgs_verify(&witness_seg, false) != MOL_OK) {
+    return ERROR_SYSCALL;
+  }
+
+  mol_seg_t reveal_seg = MolReader_WitnessArgs_get_output_type(&witness_seg);
+  if (reveal_seg.size != 8) {
+    return ERROR_INVALID_REVEAL;
+  }
+  return CKB_SUCCESS;
+}
+
 int extract_campaign_info(
-  bool* is_campaign_cell, uint8_t* phase,
-  unsigned char* script_hash, size_t index, size_t source
+  bool* is_campaign_cell, uint8_t* phase, size_t index, size_t source
 ) {
     int ret;
     unsigned char actual_script_hash[HASH_SIZE];
@@ -228,7 +245,7 @@ int extract_campaign_info(
     if (len != HASH_SIZE) {
       return ERROR_SYSCALL;
     }
-    if (memcmp(actual_script_hash, script_hash, HASH_SIZE) != 0) {
+    if (memcmp(actual_script_hash, campaign.script_hash, HASH_SIZE) != 0) {
       *is_campaign_cell = false;
       return CKB_SUCCESS;
     }
@@ -244,7 +261,7 @@ int extract_campaign_info(
     if (len != 8) {
       return ERROR_ENCODING;
     }
-    if (phase <= START_PHASE || FINALIZE_PHASE < phase)
+    if (*phase <= START_PHASE || FINALIZE_PHASE < *phase) {
       return ERROR_INVALID_PHASE;
     }
 
@@ -254,40 +271,44 @@ int extract_campaign_info(
     return CKB_SUCCESS;
 }
 
-int main() {
-  int ret;
-
+int initialize() {
   // Load current script
   mol_seg_res_t script_seg_res = load_current_script();
   if (script_seg_res.errno != MOL_OK) {
     return script_seg_res.errno;
   }
-  mol_seg_t script_seg = script_seg_res.seg;
 
   // Load current script hash
   mol_seg_res_t script_hash_seg_res = load_current_script_hash();
   if (script_hash_seg_res.errno != MOL_OK) {
     return script_hash_seg_res.errno;
   }
-  mol_seg_t script_hash_seg = script_hash_seg_res.seg;
 
-  // Initialize global `campaign` from script args,
-  mol_seg_t args_seg = MolReader_Script_get_args(&script_seg);
+  mol_seg_t args_seg = MolReader_Script_get_args(&script_seg_res.seg);
   mol_seg_t campaign_seg = MolReader_Bytes_raw_bytes(&args_seg);
   if (MolReader_CampaignArgs_verify(&campaign_seg, false) != MOL_OK) {
     return ERROR_ENCODING;
   }
-  campaign.id = *(uint8_t*)(MolReader_CampaignArgs_get_id(&campaign_seg).ptr);
+
+  campaign.id = (uint8_t*)(MolReader_CampaignArgs_get_id(&campaign_seg).ptr);
   campaign.period = *(uint64_t*)(MolReader_CampaignArgs_get_period(&campaign_seg).ptr);
   campaign.deposit = *(uint64_t*)(MolReader_CampaignArgs_get_deposit(&campaign_seg).ptr);
+  campaign.script_hash = (uint8_t*)(script_hash_seg_res.seg.ptr);
+  return CKB_SUCCESS;
+}
 
-  // TODO Phase checking. 这里的所有 handle_* 都是面向 output。至于 input，我们只要确保其 phase转移正确即可
+int main() {
+  int ret = initialize();
+  if (ret != CKB_SUCCESS) {
+    return ret;
+  }
+
   for (size_t index = 0; ; index++) {
     bool is_campaign_cell;
     uint8_t phase;
     int ret = extract_campaign_info(
         &is_campaign_cell, &phase,
-        script_hash_seg.ptr, index, CKB_SOURCE_OUTPUT,
+        index, CKB_SOURCE_OUTPUT
     );
     if (ret == CKB_INDEX_OUT_OF_BOUND) {
       break;
@@ -299,22 +320,19 @@ int main() {
 
     switch (phase) {
       case START_PHASE:
-        ret = verify_start(index);
+        ret = verify_start(index, CKB_SOURCE_OUTPUT);
       case COMMIT_PHASE:
-        ret = verify_commit(index);
+        ret = verify_commit(index, CKB_SOURCE_OUTPUT);
       case REVEAL_PHASE:
-        // Ensure the input at the same position is commit cell
-        ret = extract_campaign_info(
-            &is_campaign_cell, &phase,
-            script_hash_seg.ptr, index, CKB_SOURCE_INPUT,
-        );
-        if (!(ret == CKB_SUCCESS && is_campaign_cell)) {
-          return ERROR_INVALID_REVEAL;
+        ret = verify_commit(index, CKB_SOURCE_INPUT);
+        if (ret == CKB_SUCCESS) {
+          ret = verify_reveal(index);
         }
-
-        ret = verify_reveal(index);
       case AGGREGATE_PHASE:
-        ret = verify_aggregate(index);
+        ret = verify_start(index, CKB_SOURCE_INPUT);
+        if (ret == CKB_SUCCESS) {
+          ret = verify_aggregate(index);
+        }
       case CHALLENGE_PHASE:
         ret = verify_challenge(index);
       case FINALIZE_PHASE:
