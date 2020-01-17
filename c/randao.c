@@ -10,6 +10,7 @@
 // TODO 搞懂 "static" 关键字的用处
 // TODO 什么时候用 CKB_SOURCE_INPUT 什么时候用 CKB_SOURCE_GROUP_INPUT
 // TODO 验证 input 的时候，其实只需要验证 layout，不需要验证 content，所以直接调 verify_xxx 来验证 input 有点浪费
+// TODO 把 extract_* 个格式统一一下？
 
 #define ERROR_INVALID_PHASE               -100
 #define ERROR_INVALID_CAMPAIGN_ID         -101
@@ -19,6 +20,8 @@
 #define ERROR_INVALID_AGGREGATE_UNREVEAL  -105
 #define ERROR_INVALID_AGGREGATE_REVEAL    -106
 #define ERROR_INVALID_AGGREGATE_INPUT     -107
+#define ERROR_INVALID_CHALLENGE           -108
+#define ERROR_INVALID_FINALIZE            -109
 
 #define SCRIPT_SIZE       32768 /* 32 KB */
 #define WITNESS_SIZE      32768 /* 32 KB */
@@ -122,6 +125,23 @@ int extract_campaign_info(
     // and we alreaady get the `phase` and `capacity`.
     *is_campaign_cell = true;
     return CKB_SUCCESS;
+}
+
+mol_seg_res_t extract_summary(size_t index, size_t source) {
+  mol_seg_res_t summary_seg_res;
+  unsigned char summary[SUMMARY_SIZE];
+  uint64_t len = 0;
+  int ret = ckb_load_cell_data(summary, &len, CAMPAIGN_PRE_OCCUPIED, index, source);
+  if (ret == CKB_SUCCESS) {
+    summary_seg_res.seg.ptr = (uint8_t *)summary;
+    summary_seg_res.seg.size = len;
+    if (MolReader_Summary_verify(&summary_seg_res.seg, false) != MOL_OK) {
+      ret = ERROR_ENCODING;
+    }
+  }
+
+  summary_seg_res.errno = ret;
+  return summary_seg_res;
 }
 
 int initialize() {
@@ -247,37 +267,41 @@ int verify_reveal_witness(size_t index) {
 }
 
 int verify_summary(size_t index, size_t source) {
-  unsigned char summary[SUMMARY_SIZE];
-  uint64_t len = 0;
-  int ret = ckb_load_cell_data(summary, &len, CAMPAIGN_PRE_OCCUPIED, index, source);
-  if (ret != CKB_SUCCESS) {
-    return ret;
+  mol_seg_res_t summary_seg_res = extract_summary(index, source);
+  if (summary_seg_res.errno != MOL_OK) {
+    return summary_seg_res.errno;
   }
 
-  mol_seg_t summary_seg;
-  summary_seg.ptr = (uint8_t *)summary;
-  summary_seg.size = len;
-  if (MolReader_Summary_verify(&summary_seg, false) != MOL_OK) {
-    return ERROR_ENCODING;
-  }
-
-  mol_seg_t unreveals_seg = molreader_summary_get_unreveals(&summary_seg);
-  for (mol_num_t i = 0, n = molreader_indexvec_length(&unreveals_seg); i < n; i++) {
+  mol_num_t minimal;
+  mol_seg_t unreveals_seg = MolReader_Summary_get_unreveals(&summary_seg_res.seg);
+  for (mol_num_t i = 0, n = MolReader_IndexVec_length(&unreveals_seg); i < n; i++) {
     mol_num_t position = *(mol_num_t*)(MolReader_IndexVec_get(&unreveals_seg, i).seg.ptr);
+    if (i == 0 || position > minimal) {
+      minimal = position;
+    } else {
+      return ERROR_INVALID_AGGREGATE_UNREVEAL;
+    }
+
     bool is_campaign_cell;
     uint8_t phase;
     int ret = extract_campaign_info(
         &is_campaign_cell, &phase,
-        position, CKB_SOURCE_CELL_DEP
+        position, CKB_SOURCE_INPUT
     );
     if (!(ret == CKB_SUCCESS && is_campaign_cell && phase == COMMIT_PHASE)) {
-      return ERROR_INVALID_AGGREGATE_REVEAL;
+      return ERROR_INVALID_AGGREGATE_UNREVEAL;
     }
   }
 
-  mol_seg_t reveals_seg = molreader_summary_get_reveals(&summary_seg);
-  for (mol_num_t i = 0, n = molreader_indexvec_length(&reveals_seg); i < n; i++) {
+  mol_seg_t reveals_seg = MolReader_Summary_get_reveals(&summary_seg_res.seg);
+  for (mol_num_t i = 0, n = MolReader_IndexVec_length(&reveals_seg); i < n; i++) {
     mol_num_t position = *(mol_num_t*)(MolReader_IndexVec_get(&reveals_seg, i).seg.ptr);
+    if (i == 0 || position > minimal) {
+      minimal = position;
+    } else {
+      return ERROR_INVALID_AGGREGATE_REVEAL;
+    }
+
     bool is_campaign_cell;
     uint8_t phase;
     int ret = extract_campaign_info(
@@ -325,7 +349,7 @@ int verify_aggregate(size_t index, size_t source) {
 }
 
 int verify_challenge(size_t index) {
-  int ret = verify_summary(index, source);
+  int ret = verify_summary(index, CKB_SOURCE_INPUT);
   if (ret != CKB_SUCCESS) {
     return ret;
   }
@@ -341,7 +365,12 @@ int verify_challenge(size_t index) {
 }
 
 int verify_finalize(size_t index) {
-  // TODO
+  mol_seg_res_t summary_seg_res = extract_summary(index, CKB_SOURCE_INPUT);
+  if (summary_seg_res.errno != MOL_OK) {
+    return summary_seg_res.errno;
+  }
+
+  // TODO 分账
   return CKB_SUCCESS;
 }
 
@@ -366,6 +395,8 @@ int main() {
       continue;
     }
 
+    bool input_is_campaign_cell;
+    uint8_t input_phase;
     switch (phase) {
       case START_PHASE:
         ret = verify_start(index, CKB_SOURCE_OUTPUT);
@@ -377,8 +408,6 @@ int main() {
           ret = verify_reveal(index);
         }
       case AGGREGATE_PHASE:
-        bool input_is_campaign_cell;
-        uint8_t input_phase;
         ret = extract_campaign_info(
             &input_is_campaign_cell, &input_phase,
             index, CKB_SOURCE_INPUT
@@ -407,7 +436,7 @@ int main() {
           // TODO verify capacity
           ret = verify_aggregate(index, CKB_SOURCE_INPUT);
           if (ret == CKB_SUCCESS) {
-            ret = verify_challenge(index, CKB_SOURCE_OUTPUT);
+            ret = verify_challenge(index);
           }
         } else {
           return ERROR_INVALID_AGGREGATE_INPUT;
