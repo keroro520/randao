@@ -11,6 +11,8 @@
 // TODO 什么时候用 CKB_SOURCE_INPUT 什么时候用 CKB_SOURCE_GROUP_INPUT
 // TODO 验证 input 的时候，其实只需要验证 layout，不需要验证 content，所以直接调 verify_xxx 来验证 input 有点浪费
 // TODO 把 extract_* 个格式统一一下？
+// TODO 分账
+// TODO Compare the input-summary and output-summary by alphabetical order
 
 #define ERROR_INVALID_PHASE               -100
 #define ERROR_INVALID_CAMPAIGN_ID         -101
@@ -358,8 +360,11 @@ int verify_challenge(size_t index) {
   uint64_t output_data_size = 0;
   int ret1 = ckb_load_cell_data(NULL, &input_data_size, 0, index, CKB_SOURCE_INPUT);
   int ret2 = ckb_load_cell_data(NULL, &output_data_size, 0, index, CKB_SOURCE_OUTPUT);
-  if (!(ret1 == CKB_SUCCESS && ret2 == CKB_SUCCESS && input_data_size < output_data_size)) {
+  if (ret1 != CKB_SUCCESS || ret2 != CKB_SUCCESS || input_data_size > output_data_size) {
     return ERROR_INVALID_CHALLENGE;
+  }
+  if (input_data_size == output_data_size) {
+    // TODO Compare the input-summary and output-summary by alphabetical order
   }
   return CKB_SUCCESS;
 }
@@ -399,7 +404,10 @@ int main() {
     uint8_t input_phase;
     switch (phase) {
       case START_PHASE:
-        ret = verify_start(index, CKB_SOURCE_OUTPUT);
+        ret = verify_capacity(campaign.deposit, index);
+        if (ret == CKB_SUCCESS) {
+          ret = verify_start(index, CKB_SOURCE_OUTPUT);
+        }
       case COMMIT_PHASE:
         ret = verify_commit(index, CKB_SOURCE_OUTPUT);
       case REVEAL_PHASE:
