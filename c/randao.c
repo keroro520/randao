@@ -6,25 +6,33 @@
 // TODO * time lock checking
 // TODO * verify phase transfer
 // TODO MolReader_Verify 里应该会校验长度，其实没必要在前面还检查一次 if len == xxx
+// TODO 对于 challenge ，要加上对 capacity 的检查
 // TODO 搞懂 "static" 关键字的用处
+// TODO 什么时候用 CKB_SOURCE_INPUT 什么时候用 CKB_SOURCE_GROUP_INPUT
+// TODO 验证 input 的时候，其实只需要验证 layout，不需要验证 content，所以直接调 verify_xxx 来验证 input 有点浪费
 
 #define ERROR_INVALID_PHASE               -100
 #define ERROR_INVALID_CAMPAIGN_ID         -101
 #define ERROR_INVALID_CAPACITY            -102
 #define ERROR_INVALID_COMMITMENT          -103
 #define ERROR_INVALID_REVEAL              -104
+#define ERROR_INVALID_AGGREGATE_UNREVEAL  -105
+#define ERROR_INVALID_AGGREGATE_REVEAL    -106
+#define ERROR_INVALID_AGGREGATE_INPUT     -107
 
 #define SCRIPT_SIZE       32768 /* 32 KB */
 #define WITNESS_SIZE      32768 /* 32 KB */
 #define OUT_POINT_SIZE    36
 #define HASH_SIZE         32
+#define SUMMARY_SIZE      32768 /* 32 KB */
 
 #define START_PHASE       1
 #define COMMIT_PHASE      2
 #define REVEAL_PHASE      3
 #define AGGREGATE_PHASE   4
-#define CHALLENGE_PHASE   5
-#define FINALIZE_PHASE    6
+#define FINALIZE_PHASE    5
+
+#define CAMPAIGN_PRE_OCCUPIED 8
 
 struct {
   uint8_t* id;          // OutPoint
@@ -193,7 +201,7 @@ int verify_commitment(size_t index, size_t source) {
   uint64_t len = HASH_SIZE;
   unsigned char commitment[HASH_SIZE];
   int ret = ckb_load_cell_data(
-      commitment, &len, 8, /* `phase` pre-occupied */
+      commitment, &len, CAMPAIGN_PRE_OCCUPIED,
       index, source
   );
   if (ret != CKB_SUCCESS) {
@@ -238,7 +246,57 @@ int verify_reveal_witness(size_t index) {
   return CKB_SUCCESS;
 }
 
+int verify_summary(size_t index, size_t source) {
+  unsigned char summary[SUMMARY_SIZE];
+  uint64_t len = 0;
+  int ret = ckb_load_cell_data(summary, &len, CAMPAIGN_PRE_OCCUPIED, index, source);
+  if (ret != CKB_SUCCESS) {
+    return ret;
+  }
+
+  mol_seg_t summary_seg;
+  summary_seg.ptr = (uint8_t *)summary;
+  summary_seg.size = len;
+  if (MolReader_Summary_verify(&summary_seg, false) != MOL_OK) {
+    return ERROR_ENCODING;
+  }
+
+  mol_seg_t unreveals_seg = molreader_summary_get_unreveals(&summary_seg);
+  for (mol_num_t i = 0, n = molreader_indexvec_length(&unreveals_seg); i < n; i++) {
+    mol_num_t position = *(mol_num_t*)(MolReader_IndexVec_get(&unreveals_seg, i).seg.ptr);
+    bool is_campaign_cell;
+    uint8_t phase;
+    int ret = extract_campaign_info(
+        &is_campaign_cell, &phase,
+        position, CKB_SOURCE_CELL_DEP
+    );
+    if (!(ret == CKB_SUCCESS && is_campaign_cell && phase == COMMIT_PHASE)) {
+      return ERROR_INVALID_AGGREGATE_REVEAL;
+    }
+  }
+
+  mol_seg_t reveals_seg = molreader_summary_get_reveals(&summary_seg);
+  for (mol_num_t i = 0, n = molreader_indexvec_length(&reveals_seg); i < n; i++) {
+    mol_num_t position = *(mol_num_t*)(MolReader_IndexVec_get(&reveals_seg, i).seg.ptr);
+    bool is_campaign_cell;
+    uint8_t phase;
+    int ret = extract_campaign_info(
+        &is_campaign_cell, &phase,
+        position, CKB_SOURCE_CELL_DEP
+    );
+    if (!(ret == CKB_SUCCESS && is_campaign_cell && phase == REVEAL_PHASE)) {
+      return ERROR_INVALID_AGGREGATE_REVEAL;
+    }
+  }
+
+  return CKB_SUCCESS;
+}
+
 int verify_start(size_t index, size_t source) {
+  int ret = verify_capacity(campaign.deposit, index);
+  if (ret != CKB_SUCCESS) {
+    return ret;
+  }
   return verify_campaign_id(index, source);
 }
 
@@ -262,13 +320,23 @@ int verify_reveal(size_t index) {
   return verify_reveal_witness(index);
 }
 
-int verify_aggregate(size_t index) {
-  // TODO
-  return CKB_SUCCESS;
+int verify_aggregate(size_t index, size_t source) {
+  return verify_summary(index, source);
 }
 
 int verify_challenge(size_t index) {
-  // TODO
+  int ret = verify_summary(index, source);
+  if (ret != CKB_SUCCESS) {
+    return ret;
+  }
+
+  uint64_t input_data_size = 0;
+  uint64_t output_data_size = 0;
+  int ret1 = ckb_load_cell_data(NULL, &input_data_size, 0, index, CKB_SOURCE_INPUT);
+  int ret2 = ckb_load_cell_data(NULL, &output_data_size, 0, index, CKB_SOURCE_OUTPUT);
+  if (!(ret1 == CKB_SUCCESS && ret2 == CKB_SUCCESS && input_data_size < output_data_size)) {
+    return ERROR_INVALID_CHALLENGE;
+  }
   return CKB_SUCCESS;
 }
 
@@ -283,7 +351,7 @@ int main() {
     return ret;
   }
 
-  for (size_t index = 0; ; index++) {
+  for (size_t index = 0; ret == CKB_SUCCESS; index++) {
     bool is_campaign_cell;
     uint8_t phase;
     int ret = extract_campaign_info(
@@ -309,19 +377,48 @@ int main() {
           ret = verify_reveal(index);
         }
       case AGGREGATE_PHASE:
-        ret = verify_start(index, CKB_SOURCE_INPUT);
-        if (ret == CKB_SUCCESS) {
-          ret = verify_aggregate(index);
+        bool input_is_campaign_cell;
+        uint8_t input_phase;
+        ret = extract_campaign_info(
+            &input_is_campaign_cell, &input_phase,
+            index, CKB_SOURCE_INPUT
+        );
+        if (ret != CKB_SUCCESS) {
+          return ret;
         }
-      case CHALLENGE_PHASE:
-        ret = verify_challenge(index);
+        if (!input_is_campaign_cell) {
+          return ERROR_INVALID_AGGREGATE_INPUT;
+        }
+        if (phase == START_PHASE) {
+          // Normal
+          //
+          // As for normal AggregateCell, we expect its capacity be equal to
+          // StartCell.capacity + campaign.deposit, which can be simplify to
+          // 2 * campaign.deposit
+          ret = verify_capacity(2 * campaign.deposit, index);
+          if (ret == CKB_SUCCESS) {
+            ret = verify_start(index, CKB_SOURCE_INPUT);
+            if (ret == CKB_SUCCESS) {
+              ret = verify_aggregate(index, CKB_SOURCE_OUTPUT);
+            }
+          }
+        } else if (phase == AGGREGATE_PHASE) {
+          // Challenge
+          // TODO verify capacity
+          ret = verify_aggregate(index, CKB_SOURCE_INPUT);
+          if (ret == CKB_SUCCESS) {
+            ret = verify_challenge(index, CKB_SOURCE_OUTPUT);
+          }
+        } else {
+          return ERROR_INVALID_AGGREGATE_INPUT;
+        }
       case FINALIZE_PHASE:
-        ret = verify_finalize(index);
-    }
-    if (ret != CKB_SUCCESS) {
-      return ret;
+        ret = verify_aggregate(index, CKB_SOURCE_INPUT);
+        if (ret == CKB_SUCCESS) {
+          ret = verify_finalize(index);
+        }
     }
   }
 
-  return CKB_SUCCESS;
+  return ret;
 }
