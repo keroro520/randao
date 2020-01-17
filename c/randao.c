@@ -10,7 +10,7 @@
 
 #define ERROR_INVALID_PHASE               -100
 #define ERROR_INVALID_CAMPAIGN_ID         -101
-#define ERROR_INVALID_DEPOSIT_CAPACITY    -102
+#define ERROR_INVALID_CAPACITY            -102
 #define ERROR_INVALID_COMMITMENT          -103
 #define ERROR_INVALID_REVEAL              -104
 
@@ -169,7 +169,7 @@ int verify_campaign_id(size_t index, size_t source) {
   return MOL_OK;
 }
 
-int verify_deposit_capacity(size_t index) {
+int verify_capacity(uint64_t expected_capacity, size_t index) {
   uint64_t capacity = 0;
   uint64_t len = 8;
   int ret = ckb_load_cell_by_field(
@@ -183,8 +183,8 @@ int verify_deposit_capacity(size_t index) {
     return ERROR_SYSCALL;
   }
 
-  if (capacity != campaign.deposit) {
-    return ERROR_INVALID_DEPOSIT_CAPACITY;
+  if (capacity != expected_capacity) {
+    return ERROR_INVALID_CAPACITY;
   }
   return CKB_SUCCESS;
 }
@@ -249,16 +249,16 @@ int verify_commit(size_t index, size_t source) {
     return ret;
   }
 
-  return verify_deposit_capacity(index);
+  return verify_capacity(campaign.deposit, index);
 }
 
 int verify_reveal(size_t index) {
-  int ret = verify_deposit_capacity(index);
+  int ret = verify_capacity(campaign.deposit, index);
   if (ret != CKB_SUCCESS) {
     return ret;
   }
 
-  // FIXME TODO bilibili verify commitment == hash(reveal)
+  // TODO verify commitment == hash(reveal)
   return verify_reveal_witness(index);
 }
 
