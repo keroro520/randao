@@ -13,7 +13,10 @@
 // TODO 把 extract_* 个格式统一一下？
 // TODO 分账
 // TODO Compare the input-summary and output-summary by alphabetical order
-// TODO 因为 finalize 分账时要从 input AggrCell 里拿到 `reveals index` 列表，然后再去 cell-deps 拿到 RevealCell。那么 finalize 分账前就要校验一下这个当前的 cell-deps 是不是有作假。如果通过记录 `cell-deps-hash` 来防止作假的话，就要引入哈希库；所以我想就不管了，就比较个数目就可以了，我觉得这个安全假设可以接受
+// TODO 因为 finalize 分账时要从 input AggrCell 里拿到 `reveals index` 列表，然后再去 cell-deps 拿到 RevealCell。那么 finalize 分账前就要校验一下这个当前的 cell-deps 是不是有作假。如果通过记录 `cell-deps-hash` 来防止作假的话，就要引入哈希库；所以我想就不管了，就比较个数目就可以了，我觉得这个安全假设可以接受。 ======> 其实也不用比较数目，因为 `reveals index` 是从 input.output_data 里拿到的，做不了假。 ======> 好吧，直接分账，不用做多余的检查了
+// TODO 我在 finalize 分账的时候做了一个假设/限制：finalize tx 的 outputs 只能包含分账 output! 不能和其它类别的 input/output 混在一块！主要是为了减少分账的复杂度
+// TODO 看一下有没有这样的 bug: 定义 mol_seg_t/mol_seg_res_t 然后直接用 xxx.ptr 传给 ckb_load_cell_data
+// TODO finalize 再加一个限制：inputs.len() == 1 && 0th-input is AggregateCell && 0th-output is for finalizer, 1th-output is for aggregator, 2+i output is for i-th partitioner
 
 #define ERROR_INVALID_PHASE               -100
 #define ERROR_INVALID_CAMPAIGN_ID         -101
@@ -30,6 +33,7 @@
 #define WITNESS_SIZE      32768 /* 32 KB */
 #define OUT_POINT_SIZE    36
 #define HASH_SIZE         32
+#define REVEAL_SIZE       32768 /* 32 KB */
 #define SUMMARY_SIZE      32768 /* 32 KB */
 
 #define START_PHASE       1
@@ -145,6 +149,28 @@ mol_seg_res_t extract_summary(size_t index, size_t source) {
 
   summary_seg_res.errno = ret;
   return summary_seg_res;
+}
+
+mol_seg_res_t extract_reveal_lock_script(size_t index, size_t source) {
+  mol_seg_res_t script_seg_res;
+  unsigned char script[SCRIPT_SIZE];
+  uint64_t len = 0;
+  int ret = ckb_load_cell_data(
+    script, &len, CAMPAIGN_PRE_OCCUPIED, index, source
+  );
+  if (ret != CKB_SUCCESS) {
+    script_seg_res.errno = ret;
+    return script_seg_res;
+  }
+
+  script_seg_res.seg.ptr = (uint8_t *)script;
+  script_seg_res.seg.size = len;
+  if (MolReader_Script_verify(&script_seg_res.seg, false) != MOL_OK) {
+    script_seg_res.errno = ERROR_ENCODING;
+  }
+
+  script_seg_res.errno = MOL_OK;
+  return script_seg_res;
 }
 
 int initialize() {
@@ -280,9 +306,9 @@ int verify_summary(size_t index, size_t source) {
     // Only check unreveals when source is CKB_SOURCE_OUTPUT
     mol_seg_t unreveals_seg = MolReader_Summary_get_unreveals(&summary_seg_res.seg);
     for (mol_num_t i = 0, n = MolReader_IndexVec_length(&unreveals_seg); i < n; i++) {
-      mol_num_t position = *(mol_num_t*)(MolReader_IndexVec_get(&unreveals_seg, i).seg.ptr);
-      if (i == 0 || position > minimal) {
-        minimal = position;
+      mol_num_t pos = *(mol_num_t*)(MolReader_IndexVec_get(&unreveals_seg, i).seg.ptr);
+      if (i == 0 || pos > minimal) {
+        minimal = pos;
       } else {
         return ERROR_INVALID_AGGREGATE_UNREVEAL;
       }
@@ -290,8 +316,7 @@ int verify_summary(size_t index, size_t source) {
       bool is_campaign_cell;
       uint8_t phase;
       int ret = extract_campaign_info(
-          &is_campaign_cell, &phase,
-          position, CKB_SOURCE_INPUT
+          &is_campaign_cell, &phase, pos, CKB_SOURCE_INPUT
       );
       if (!(ret == CKB_SUCCESS && is_campaign_cell && phase == COMMIT_PHASE)) {
         return ERROR_INVALID_AGGREGATE_UNREVEAL;
@@ -301,9 +326,9 @@ int verify_summary(size_t index, size_t source) {
 
   mol_seg_t reveals_seg = MolReader_Summary_get_reveals(&summary_seg_res.seg);
   for (mol_num_t i = 0, n = MolReader_IndexVec_length(&reveals_seg); i < n; i++) {
-    mol_num_t position = *(mol_num_t*)(MolReader_IndexVec_get(&reveals_seg, i).seg.ptr);
-    if (i == 0 || position > minimal) {
-      minimal = position;
+    mol_num_t pos = *(mol_num_t*)(MolReader_IndexVec_get(&reveals_seg, i).seg.ptr);
+    if (i == 0 || pos > minimal) {
+      minimal = pos;
     } else {
       return ERROR_INVALID_AGGREGATE_REVEAL;
     }
@@ -312,7 +337,7 @@ int verify_summary(size_t index, size_t source) {
     uint8_t phase;
     int ret = extract_campaign_info(
         &is_campaign_cell, &phase,
-        position, CKB_SOURCE_CELL_DEP
+        pos, CKB_SOURCE_CELL_DEP
     );
     if (!(ret == CKB_SUCCESS && is_campaign_cell && phase == REVEAL_PHASE)) {
       return ERROR_INVALID_AGGREGATE_REVEAL;
@@ -343,6 +368,11 @@ int verify_commit(size_t index, size_t source) {
 int verify_reveal(size_t index) {
   int ret = verify_capacity(campaign.deposit, index);
   if (ret != CKB_SUCCESS) {
+    return ret;
+  }
+
+  ret = extract_reveal_lock_script(index, CKB_SOURCE_OUTPUT).errno;
+  if (ret != MOL_OK) {
     return ret;
   }
 
@@ -377,6 +407,28 @@ int verify_finalize(size_t index) {
   mol_seg_res_t summary_seg_res = extract_summary(index, CKB_SOURCE_INPUT);
   if (summary_seg_res.errno != MOL_OK) {
     return summary_seg_res.errno;
+  }
+
+  mol_seg_t reveals_seg = MolReader_Summary_get_reveals(&summary_seg_res.seg);
+  for (mol_num_t i = 0, n = MolReader_IndexVec_length(&reveals_seg); i < n; i++) {
+    mol_num_t pos = *(mol_num_t*)(MolReader_IndexVec_get(&reveals_seg, i).seg.ptr);
+
+    // Check that ith-output is corresponding to `pos-th-cell-dep`
+    mol_seg_res_t script_seg_res = extract_reveal_lock_script(pos, CKB_SOURCE_CELL_DEP);
+    if (script_seg_res.errno != MOL_OK) {
+      return script_seg_res.errno;
+    }
+    mol_seg_t expected_script_seg = script_seg_res.seg;
+
+    // TODO 分账：0th is for finalizer, 1th is for aggregator, (2+i) is for ith partitioner
+    // unsigned char actual_script[SCRIPT_SIZE];
+    // uint64_t len = 0;
+    // int ret = ckb_load_cell_by_field(
+    //     actual_script, &len, 0, i+2, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_LOCK
+    // );
+    //
+    if (ret != CKB_SUCCESS) {
+    }
   }
 
   // TODO 分账
