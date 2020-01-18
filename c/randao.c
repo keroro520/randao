@@ -13,6 +13,7 @@
 // TODO 把 extract_* 个格式统一一下？
 // TODO 分账
 // TODO Compare the input-summary and output-summary by alphabetical order
+// TODO 因为 finalize 分账时要从 input AggrCell 里拿到 `reveals index` 列表，然后再去 cell-deps 拿到 RevealCell。那么 finalize 分账前就要校验一下这个当前的 cell-deps 是不是有作假。如果通过记录 `cell-deps-hash` 来防止作假的话，就要引入哈希库；所以我想就不管了，就比较个数目就可以了，我觉得这个安全假设可以接受
 
 #define ERROR_INVALID_PHASE               -100
 #define ERROR_INVALID_CAMPAIGN_ID         -101
@@ -269,29 +270,32 @@ int verify_reveal_witness(size_t index) {
 }
 
 int verify_summary(size_t index, size_t source) {
+  mol_num_t minimal;
   mol_seg_res_t summary_seg_res = extract_summary(index, source);
   if (summary_seg_res.errno != MOL_OK) {
     return summary_seg_res.errno;
   }
 
-  mol_num_t minimal;
-  mol_seg_t unreveals_seg = MolReader_Summary_get_unreveals(&summary_seg_res.seg);
-  for (mol_num_t i = 0, n = MolReader_IndexVec_length(&unreveals_seg); i < n; i++) {
-    mol_num_t position = *(mol_num_t*)(MolReader_IndexVec_get(&unreveals_seg, i).seg.ptr);
-    if (i == 0 || position > minimal) {
-      minimal = position;
-    } else {
-      return ERROR_INVALID_AGGREGATE_UNREVEAL;
-    }
+  if (source == CKB_SOURCE_OUTPUT) {
+    // Only check unreveals when source is CKB_SOURCE_OUTPUT
+    mol_seg_t unreveals_seg = MolReader_Summary_get_unreveals(&summary_seg_res.seg);
+    for (mol_num_t i = 0, n = MolReader_IndexVec_length(&unreveals_seg); i < n; i++) {
+      mol_num_t position = *(mol_num_t*)(MolReader_IndexVec_get(&unreveals_seg, i).seg.ptr);
+      if (i == 0 || position > minimal) {
+        minimal = position;
+      } else {
+        return ERROR_INVALID_AGGREGATE_UNREVEAL;
+      }
 
-    bool is_campaign_cell;
-    uint8_t phase;
-    int ret = extract_campaign_info(
-        &is_campaign_cell, &phase,
-        position, CKB_SOURCE_INPUT
-    );
-    if (!(ret == CKB_SUCCESS && is_campaign_cell && phase == COMMIT_PHASE)) {
-      return ERROR_INVALID_AGGREGATE_UNREVEAL;
+      bool is_campaign_cell;
+      uint8_t phase;
+      int ret = extract_campaign_info(
+          &is_campaign_cell, &phase,
+          position, CKB_SOURCE_INPUT
+      );
+      if (!(ret == CKB_SUCCESS && is_campaign_cell && phase == COMMIT_PHASE)) {
+        return ERROR_INVALID_AGGREGATE_UNREVEAL;
+      }
     }
   }
 
