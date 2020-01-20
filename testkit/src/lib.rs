@@ -1,5 +1,7 @@
 mod always;
 mod loader;
+mod facility;
 
-pub use always::{always_success, always_success_out_point, install};
 pub use loader::DummyDataLoader;
+pub use always::Always;
+pub use facility::Facility;
