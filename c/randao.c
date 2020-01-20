@@ -17,6 +17,7 @@
 // TODO 我在 finalize 分账的时候做了一个假设/限制：finalize tx 的 outputs 只能包含分账 output! 不能和其它类别的 input/output 混在一块！主要是为了减少分账的复杂度
 // TODO 看一下有没有这样的 bug: 定义 mol_seg_t/mol_seg_res_t 然后直接用 xxx.ptr 传给 ckb_load_cell_data
 // TODO finalize 再加一个限制：inputs.len() == 1 && 0th-input is AggregateCell && 0th-output is for finalizer, 1th-output is for aggregator, 2+i output is for i-th partitioner
+// TODO 现在的方案的 AggrCell 中把 unreveals 作为 inputs、reveals 作为 cell_deps，但是这个问题在于要对 cell_deps 做 (block_number, tx_index, output_index) 做排序来确保 “唯一性”（主要是因为 StartCell.capacity 作为奖励可能只够 N 个参与者，即“奖励不够分”问题）。我觉得可以改一下方案，把 unreveals/reveals 都放到 input，这样就解决了 “奖励不够分” 的问题了
 
 #define ERROR_INVALID_PHASE               -100
 #define ERROR_INVALID_CAMPAIGN_ID         -101
