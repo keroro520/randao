@@ -1,7 +1,7 @@
 mod always;
-mod loader;
 mod facility;
+mod loader;
 
-pub use loader::DummyDataLoader;
 pub use always::Always;
 pub use facility::Facility;
+pub use loader::DummyDataLoader;
