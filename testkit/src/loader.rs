@@ -2,7 +2,7 @@ use ckb_script::DataLoader;
 use ckb_types::{
     bytes::Bytes,
     core::{cell::CellMeta, BlockExt, EpochExt, HeaderView},
-    packed::{Byte32, CellOutput, OutPoint},
+    packed::{Byte32, OutPoint},
 };
 use std::collections::HashMap;
 
@@ -10,7 +10,7 @@ use std::collections::HashMap;
 pub struct DummyDataLoader {
     headers: HashMap<Byte32, HeaderView>,
     epoches: HashMap<Byte32, EpochExt>,
-    cells: HashMap<OutPoint, (CellOutput, Bytes)>,
+    cells: HashMap<OutPoint, CellMeta>,
 }
 
 impl DataLoader for DummyDataLoader {
@@ -19,7 +19,7 @@ impl DataLoader for DummyDataLoader {
         cell.mem_cell_data.clone().or_else(|| {
             self.cells
                 .get(&cell.out_point)
-                .map(|(_, cell_data)| (cell_data.clone(), CellOutput::calc_data_hash(cell_data)))
+                .and_then(|cell_meta| cell_meta.mem_cell_data.clone())
         })
     }
 
@@ -37,18 +37,6 @@ impl DataLoader for DummyDataLoader {
 }
 
 impl DummyDataLoader {
-    pub fn new(
-        headers: HashMap<Byte32, HeaderView>,
-        epoches: HashMap<Byte32, EpochExt>,
-        cells: HashMap<OutPoint, (CellOutput, Bytes)>,
-    ) -> Self {
-        Self {
-            headers,
-            epoches,
-            cells,
-        }
-    }
-
     pub fn add_header(&mut self, block_hash: Byte32, header: HeaderView) {
         self.headers.insert(block_hash, header);
     }
@@ -57,7 +45,7 @@ impl DummyDataLoader {
         self.epoches.insert(block_hash, epoch);
     }
 
-    pub fn add_cell(&mut self, out_point: OutPoint, cell: CellOutput, cell_data: Bytes) {
-        self.cells.insert(out_point, (cell, cell_data));
+    pub fn add_cell(&mut self, cell_meta: CellMeta) {
+        self.cells.insert(cell_meta.out_point.clone(), cell_meta);
     }
 }
