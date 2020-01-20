@@ -106,22 +106,3 @@ table WitnessArgs {
     input_type:             BytesOpt,          // Type args for input
     output_type:            BytesOpt,          // Type args for output
 }
-
-table CampaignArgs {
-    id:                     OutPoint,
-    period:                 Uint64,
-    deposit:                Uint64,
-}
-
-table RevealArgs {
-    reveal:                 Byte32,
-    lock:                   Script,
-}
-
-vector IndexVec <Uint32>;
-
-table Summary {
-    reveals:                IndexVec,
-    unreveals:              IndexVec,
-    lock:                   Script,
-}

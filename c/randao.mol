@@ -1,0 +1,17 @@
+/* CKB basic types */
+import ../c/blockchain;
+
+table CampaignArgs {
+    id:                     OutPoint,
+    period:                 Uint64,
+    deposit:                Uint64,
+}
+
+vector IndexVec <Uint32>;
+
+table Summary {
+    reveals:                IndexVec,
+    unreveals:              IndexVec,
+    reveals_hash:           Byte32,
+    lock:                   Script,
+}
