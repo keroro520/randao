@@ -11,6 +11,7 @@ testkit = { path = "./testkit" }
 ckb-types = { git = "https://github.com/nervosnetwork/ckb.git", rev = "d75e4c5" }
 ckb-script = { git = "https://github.com/nervosnetwork/ckb.git", rev = "d75e4c5" }
 lazy_static = "1.3.0"
+molecule = "=0.4.0"
 
 [workspace]
 members = [

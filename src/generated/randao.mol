@@ -1,5 +1,5 @@
 /* CKB basic types */
-import ../c/blockchain;
+import blockchain;
 
 table CampaignArgs {
     id:                     OutPoint,
